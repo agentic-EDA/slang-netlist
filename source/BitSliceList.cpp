@@ -262,12 +262,19 @@ void BitSliceList::pushLsp(const Expression &expr, EvalContext &evalCtx,
     return;
   }
   auto *path = alloc.emplace<ValuePath>(expr, evalCtx);
+  // 函数返回值上的位选等表达式没有可追踪的根符号，整段回退并遍历内部依赖。
+  if (path->lsp == nullptr || path->rootSymbol() == nullptr) {
+    pushOpaque(expr);
+    return;
+  }
   auto lo = width();
 
   // Split the LSP at any cut hints that fall inside its bounds. Each
   // sub-slice keeps the full-LSP `srcLo`/`srcHi` so consumers can
   // still recover the LSP-internal bit via `seg.concatLo - src.srcLo`.
-  auto const *rootSymbol = cuts ? path->rootSymbol() : nullptr;
+  // 动态选择的静态前缀可能宽于表达式，不能按前缀的切点拆分结果位宽。
+  auto const *rootSymbol =
+      cuts && path->lsp == path->fullExpr ? path->rootSymbol() : nullptr;
   auto const *hints = rootSymbol ? cuts->cutsFor(*rootSymbol) : nullptr;
   if (hints != nullptr) {
     uint64_t lspLo = static_cast<uint64_t>(path->lspBounds.first);

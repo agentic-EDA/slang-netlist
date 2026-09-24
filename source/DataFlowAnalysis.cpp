@@ -279,6 +279,21 @@ void DataFlowAnalysis::handle(ast::AssignmentExpression const &expr) {
                                      sliceAllocator, /*enabled=*/true, cuts);
   auto rhsList = BitSliceList::build(expr.right(), getEvalContext(),
                                      sliceAllocator, /*enabled=*/true, cuts);
+  bool dynamicLhs = false;
+  for (auto const &slice : lhsList) {
+    for (auto const &src : slice.sources) {
+      if (src.kind == BitSliceSource::Kind::Lsp &&
+          src.path->lsp != src.path->fullExpr) {
+        dynamicLhs = true;
+      }
+    }
+  }
+  if (dynamicLhs) {
+    // 动态左值可能写入完整静态前缀；逐片段记录会让后续片段覆盖前面的驱动。
+    // RHS 保持为一个整体，使全部输入依赖汇入同一个赋值节点。
+    rhsList = BitSliceList::build(expr.right(), getEvalContext(),
+                                  sliceAllocator, /*enabled=*/false);
+  }
   // The two sides can still disagree on selectable width even when both
   // are integral (e.g. an enum-to-logic coercion at a port connection
   // re-parented here). Fall back rather than asserting.
@@ -476,6 +491,11 @@ void DataFlowAnalysis::driveLhsLspSegment(const BitSliceSource &src,
   auto const &path = *src.path;
   auto const &symbol = *path.rootSymbol();
   auto const *lsp = path.lsp;
+  if (visitDynamicSelectors(path)) {
+    // 动态写入可能命中静态前缀中的任意位，不能用片段偏移缩窄写入范围。
+    handleLvalue(symbol, *lsp, DriverBitRange(path.lspBounds));
+    return;
+  }
   // Offset of this segment's LSB within the LSP's concat range.
   auto offset = seg.concatLo - src.srcLo;
   auto width = seg.width();
@@ -486,22 +506,8 @@ void DataFlowAnalysis::driveLhsLspSegment(const BitSliceSource &src,
   handleLvalue(symbol, *lsp, bounds);
 }
 
-void DataFlowAnalysis::driveRhsLspSegment(const BitSliceSource &src,
-                                          const Segment &seg) {
-  SLANG_ASSERT(src.kind == BitSliceSource::Kind::Lsp);
-  SLANG_ASSERT(seg.concatLo >= src.srcLo);
-  auto const &path = *src.path;
-  auto const &symbol = *path.rootSymbol();
-  auto const *lsp = path.lsp;
-  // Offset of this segment's LSB within the LSP's concat range.
-  auto offset = seg.concatLo - src.srcLo;
-  auto width = seg.width();
-  auto lo = static_cast<int32_t>(path.lspBounds.first + offset);
-  // `width - 1` because `DriverBitRange` is inclusive on both ends.
-  auto hi = static_cast<int32_t>(path.lspBounds.first + offset + width - 1);
-  DriverBitRange bounds{lo, hi};
-
-  // 动态选择器会改变实际读取的数据，必须作为独立调试依赖保留。
+auto DataFlowAnalysis::visitDynamicSelectors(ast::ValuePath const &path)
+    -> bool {
   bool dynamicSelection = false;
   for (auto const &element : path) {
     auto visitSelector = [&](ast::Expression const &selector,
@@ -515,7 +521,10 @@ void DataFlowAnalysis::driveRhsLspSegment(const BitSliceSource &src,
       auto savedPrecision = dependencyPrecision;
       dependencyRole = role;
       dependencyPrecision = DependencyPrecision::Exact;
+      auto savedLValue = isLValue;
+      isLValue = false;
       visit(selector);
+      isLValue = savedLValue;
       dependencyRole = savedRole;
       dependencyPrecision = savedPrecision;
     };
@@ -533,9 +542,30 @@ void DataFlowAnalysis::driveRhsLspSegment(const BitSliceSource &src,
     }
   }
 
+  return dynamicSelection;
+}
+
+void DataFlowAnalysis::driveRhsLspSegment(const BitSliceSource &src,
+                                          const Segment &seg) {
+  SLANG_ASSERT(src.kind == BitSliceSource::Kind::Lsp);
+  SLANG_ASSERT(seg.concatLo >= src.srcLo);
+  auto const &path = *src.path;
+  auto const &symbol = *path.rootSymbol();
+  auto const *lsp = path.lsp;
+  // Offset of this segment's LSB within the LSP's concat range.
+  auto offset = seg.concatLo - src.srcLo;
+  auto width = seg.width();
+  auto lo = static_cast<int32_t>(path.lspBounds.first + offset);
+  // `width - 1` because `DriverBitRange` is inclusive on both ends.
+  auto hi = static_cast<int32_t>(path.lspBounds.first + offset + width - 1);
+  DriverBitRange bounds{lo, hi};
+
+  // 动态读取保留选择器依赖，数据范围只能保证信号级精度。
+  bool dynamicSelection = visitDynamicSelectors(path);
   auto savedPrecision = dependencyPrecision;
   if (dynamicSelection) {
     dependencyPrecision = DependencyPrecision::Signal;
+    bounds = DriverBitRange(path.lspBounds);
   }
   handleRvalue(symbol, *lsp, bounds);
   dependencyPrecision = savedPrecision;

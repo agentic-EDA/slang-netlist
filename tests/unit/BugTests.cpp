@@ -1,5 +1,34 @@
 #include "Test.hpp"
 
+TEST_CASE("Function result range select in procedural assignment", "[Bugs]") {
+  auto const &tree = R"(
+module top(input logic [7:0] a, output logic [3:0] y);
+  function automatic logic [7:0] identity(input logic [7:0] x);
+    return x;
+  endfunction
+  always_comb y = identity(a)[3:0];
+endmodule
+)";
+  const NetlistTest test(tree);
+  CHECK(test.pathExists("top.a", "top.y"));
+}
+
+TEST_CASE("Function result bit select in input port connection", "[Bugs]") {
+  auto const &tree = R"(
+module child(input logic a, output logic y);
+  assign y = a;
+endmodule
+module top(input logic [7:0] a, output logic y);
+  function automatic logic [7:0] identity(input logic [7:0] x);
+    return x;
+  endfunction
+  child u(.a(identity(a)[0]), .y(y));
+endmodule
+)";
+  const NetlistTest test(tree);
+  CHECK(test.pathExists("top.a", "top.y"));
+}
+
 TEST_CASE("Slang #792: bus expression in ports", "[Bugs]") {
   auto const &tree = (R"(
 module test (input [1:0] in_i,

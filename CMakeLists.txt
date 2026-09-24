@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(
   slang-netlist
-  VERSION 0.12.0
+  VERSION 0.12.1
   LANGUAGES CXX)
 
 include(FetchContent)

@@ -72,6 +72,19 @@ module m(input logic a, output logic y);
 endmodule
 """
 
+DYNAMIC_WRITE_SV = """\
+module sink(input logic clk, input logic we, input logic [1:0] idx,
+            input logic [7:0] data);
+  logic [7:0] mem [0:3];
+  always_ff @(posedge clk)
+    if (we) mem[int'(idx)] <= data;
+endmodule
+module top(input logic clk, input logic we, input logic [1:0] sel,
+           input logic [7:0] data);
+  sink u(.clk(clk), .we(we), .idx(sel), .data(data));
+endmodule
+"""
+
 # Two instances of the same submodule (cpu and cpu2) so scope-boundary tests
 # can distinguish top.cpu from top.cpu2.
 FILTER_SV = """\
@@ -474,6 +487,53 @@ comb-loop.sv:10:10: note: assignment
 
     def test_drivers_nonexistent(self):
         self.assert_fails("rca.sv", "--drivers", "rca.nonexistent")
+
+    def test_drivers_of_dynamic_write_address(self):
+        for mode in ((), ("--no-resolve-assign-bits",)):
+            for name, expected_bounds in (
+                ("top.u.idx", [0, 1]),
+                ("top.u.idx[0]", [0, 0]),
+            ):
+                r = self.run_tool(
+                    "--top", "top", "--drivers", name, "--format", "json",
+                    "-j", "1", *mode, source=DYNAMIC_WRITE_SV,
+                )
+                envelope = json.loads(r.stdout)
+                self.assertEqual(envelope["command"], "drivers")
+                self.assertEqual(envelope["diagnostics"], [])
+                self.assertTrue(envelope["summary"]["complete"])
+                self.assertEqual(len(envelope["data"]["items"]), 1)
+                item = envelope["data"]["items"][0]
+                self.assertEqual(item["bounds"], expected_bounds)
+                self.assertEqual(item["driver"]["kind"], "port")
+                self.assertEqual(item["driver"]["path"], "top.u.idx")
+
+            found = self.run_tool(
+                "--top", "top", "--find", "top.u.idx", "--format", "json",
+                "-j", "1", *mode, source=DYNAMIC_WRITE_SV,
+            )
+            item = json.loads(found.stdout)["data"]["items"][0]
+            self.assertEqual(item["name"], "top.u.idx")
+            self.assertEqual(item["bounds"], [0, 1])
+
+            fan_in = self.run_tool(
+                "--top", "top", "--fan-in", "top.u.idx", "--format", "json",
+                "-j", "1", *mode, source=DYNAMIC_WRITE_SV,
+            )
+            upstream = json.loads(fan_in.stdout)["data"]
+            self.assertIn("top.sel", {node["path"] for node in upstream["items"]})
+            self.assertTrue(any(
+                edge["symbol"] == "top.sel" and edge["bounds"] == [0, 1]
+                for edge in upstream["edges"]
+            ))
+
+        missing = self.run_tool(
+            "--top", "top", "--drivers", "top.u.missing", "--format", "json",
+            source=DYNAMIC_WRITE_SV, check=False,
+        )
+        self.assertEqual(missing.returncode, 6)
+        self.assertEqual(json.loads(missing.stdout)["diagnostics"][0]["code"],
+                         "invalid_query")
 
     def test_edge_only_signal_is_queryable(self):
         r = self.run_tool(

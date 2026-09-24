@@ -1,5 +1,71 @@
 #include "Test.hpp"
 
+TEST_CASE("Dynamic write address keeps port driver and full array range",
+          "[BitDrivers][Drivers][Ports][Instance]") {
+  auto const &tree = R"(
+module sink(input logic clk, input logic we, input logic [1:0] idx,
+            input logic [7:0] data);
+  logic [7:0] mem [0:3];
+  always_ff @(posedge clk)
+    if (we) mem[int'(idx)] <= data;
+endmodule
+module top(input logic clk, input logic we, input logic [1:0] sel,
+           input logic [7:0] data);
+  sink u(.clk(clk), .we(we), .idx(sel), .data(data));
+endmodule
+)";
+  NetlistTest test(tree);
+  auto drivers = test.getBitDrivers("top.u.idx", {0, 1});
+  REQUIRE(drivers.size() == 1);
+  CHECK(drivers[0].bounds.lower() == 0);
+  CHECK(drivers[0].bounds.upper() == 1);
+  CHECK(drivers[0].driver->kind == NodeKind::Port);
+  CHECK(drivers[0].driver->getHierarchicalPath() == "top.u.idx");
+  CHECK(test.pathExists("top.sel", "top.u.idx"));
+  CHECK(test.pathExists("top.sel", "top.u.mem"));
+
+  bool addressEdge = false;
+  bool fullArrayWrite = false;
+  for (auto const &node : test.graph) {
+    for (auto const &edge : node->getOutEdges()) {
+      if (edge->symbol == nullptr) {
+        continue;
+      }
+      if (edge->symbol->hierarchicalPath == "top.u.idx" &&
+          edge->role == DependencyRole::Address &&
+          edge->precision == DependencyPrecision::Exact &&
+          edge->bounds.lower() == 0 && edge->bounds.upper() == 1) {
+        addressEdge = true;
+      }
+      if (edge->symbol->hierarchicalPath == "top.u.mem" &&
+          edge->bounds.lower() == 0 && edge->bounds.upper() == 31) {
+        fullArrayWrite = true;
+      }
+    }
+  }
+  CHECK(addressEdge);
+  CHECK(fullArrayWrite);
+}
+
+TEST_CASE("Dynamic write keeps every concatenated data dependency",
+          "[BitDrivers][Drivers]") {
+  auto const &tree = R"(
+module top(input logic clk, input logic [1:0] idx,
+           input logic [3:0] a, b);
+  logic [7:0] mem [0:3];
+  always_ff @(posedge clk) mem[idx] <= {a, b};
+endmodule
+)";
+  NetlistTest test(tree);
+  CHECK(test.pathExists("top.idx", "top.mem"));
+  CHECK(test.pathExists("top.a", "top.mem"));
+  CHECK(test.pathExists("top.b", "top.mem"));
+  auto drivers = test.getBitDrivers("top.mem", {0, 31});
+  REQUIRE(drivers.size() == 1);
+  CHECK(drivers[0].bounds.lower() == 0);
+  CHECK(drivers[0].bounds.upper() == 31);
+}
+
 TEST_CASE("Dynamic selector records index dependency", "[Drivers]") {
   auto const &tree = R"(
 module m(input logic [3:0] a, input logic [1:0] sel, output logic y);

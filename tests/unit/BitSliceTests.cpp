@@ -63,6 +63,23 @@ TEST_CASE("BitSliceList: arithmetic expression is opaque", "[BitSliceList]") {
   CHECK(list[0].sources[0].kind == BitSliceSource::Kind::Opaque);
 }
 
+TEST_CASE("BitSliceList: function result selects are opaque",
+          "[BitSliceList]") {
+  const std::string setup =
+      "logic [7:0] a; "
+      "function automatic logic [7:0] identity(input logic [7:0] x); "
+      "return x; endfunction ";
+  for (auto const *declaration : {"logic [3:0] y; assign y = identity(a)[3:0];",
+                                  "logic y; assign y = identity(a)[0];"}) {
+    ExprHarness h(setup + declaration);
+    auto list = BitSliceList::build(*h.expr, *h.evalCtx, h.alloc);
+    REQUIRE(list.size() == 1);
+    REQUIRE(list[0].sources.size() == 1);
+    CHECK(list[0].sources[0].kind == BitSliceSource::Kind::Opaque);
+    CHECK(list[0].sources[0].opaqueExpr != nullptr);
+  }
+}
+
 TEST_CASE("BitSliceList: concatenation is MSB-first and linear",
           "[BitSliceList]") {
   ExprHarness h("logic [1:0] a, b; logic [3:0] c; assign c = {a, b};");

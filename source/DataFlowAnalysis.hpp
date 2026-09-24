@@ -223,6 +223,7 @@ private:
 
   void driveLhsLspSegment(const BitSliceSource &src, const Segment &seg);
   void driveRhsLspSegment(const BitSliceSource &src, const Segment &seg);
+  auto visitDynamicSelectors(ast::ValuePath const &path) -> bool;
 };
 
 } // namespace slang::netlist
